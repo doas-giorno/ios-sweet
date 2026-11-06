@@ -403,7 +403,7 @@ void shim_main(uint64_t dtb)
 	con_str("UFS", "probe done, reset in ~3 min");
 	delay_ms(180000);
 	reset(20);
-#else
+#elif !defined(SARGO_M3)
 	/* Pixel 3a: probe the eMMC (sdhci-msm) while the MMU is still off, keep it on screen 2 min. */
 	stage = "emmc";
 	test_emmc();
@@ -452,5 +452,10 @@ void shim_main(uint64_t dtb)
 	test_gic();
 
 	stage = "done";
+#ifdef SARGO
+	for (;;)
+		__asm__ volatile("wfe");
+#else
 	reset(40);
+#endif
 }

@@ -7,7 +7,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 LLVM=${LLVM:-/usr/lib/llvm/22/bin}
 CC="$LLVM/clang --target=aarch64-linux-gnu"
-CFLAGS="-DSARGO -O2 -ffreestanding -nostdlib -fno-pic -mgeneral-regs-only -mstrict-align -fno-stack-protector -fno-jump-tables -Wall -Wextra"
+CFLAGS="-DSARGO ${SARGO_DEFS:-} -O2 -ffreestanding -nostdlib -fno-pic -mgeneral-regs-only -mstrict-align -fno-stack-protector -fno-jump-tables -Wall -Wextra"
 SRC="start.S shim.c console.c mmu.c fdt.c loader.c emmc.c"	# emmc.c instead of ufs.c: the 3a has eMMC
 mkdir -p out/sargo
 objs=
@@ -21,5 +21,5 @@ $CC $CFLAGS -fuse-ld=lld -static -T shim.ld -Wl,--build-id=none -Wl,-N $objs -o 
 $LLVM/llvm-objcopy -O binary out/sargo/shim.elf out/sargo/Image
 size=$($LLVM/llvm-nm out/sargo/shim.elf | awk '$3=="_end"{print strtonum("0x"$1)}')
 truncate -s "$size" out/sargo/Image
-python3 -I ../tools/mkboot-sargo.py out/sargo/Image out/sargo-boot.img ${1:+"$1"}
+python3 -I ../tools/mkboot-sargo.py out/sargo/Image ${SARGO_OUT:-out/sargo-boot.img} ${1:+"$1"}
 ls -l out/sargo/Image out/sargo-boot.img

@@ -1,0 +1,435 @@
+diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
+index 6b926fe..a380520 100644
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -109,6 +109,7 @@ static struct {
+ 	bool writable;                          /* boot-arg ufsrw=1 */
+ 	bool cache;                             /* boot-arg ufscache=1 */
+ 	bool wait;                              /* boot-arg ufswait=1 */
++	bool emmc;                              /* Pixel 3a: sdhci-msm eMMC instead of UFS (/sweet-emmc) */
+ 	int bmajor, cmajor;
+ 	dev_t bdev;
+ 	bool ready;
+@@ -141,6 +142,314 @@ dma_clean(uint32_t off, uint32_t len)
+ 	clean_dcache64((addr64_t)(su.dma_pa + off), len, TRUE);
+ }
+ 
++/*
++ * Pixel 3a (SDM670) eMMC: Qualcomm sdhci-msm v5 at 0x7c4000, polled, ADMA2 only.
++ * Bring-up facts (shim/emmc.c, verified on the phone): the bootloader leaves the host
++ * gated and the card in HS400, so the card is re-initialised from CMD0 here; PIO never
++ * completes on this controller; 32-bit ADMA2 works, so the DMA memory must be below
++ * 4 GiB. The SD clock divider assumes the 200 MHz base clock the capabilities report.
++ * The device block seen by the rest of this file stays 4 KiB (8 sectors).
++ */
++#define EM_BLK          0x04
++#define EM_ARG          0x08
++#define EM_XFERCMD      0x0c
++#define EM_RESP         0x10
++#define EM_PRESENT      0x24
++#define EM_HOSTCTL      0x28
++#define EM_CLKTOUT      0x2c
++#define EM_INT          0x30
++#define EM_INT_EN       0x34
++#define EM_SIG_EN       0x38
++#define EM_ADMA_ADDR    0x58
++#define EM_PS_INHIBIT   0x3u                    /* CMD | DAT inhibit */
++#define EM_INT_CMD      (1u << 0)
++#define EM_INT_XFER     (1u << 1)
++#define EM_INT_ERR      (1u << 15)
++#define EM_TM_DMA       (1u << 0)
++#define EM_TM_BLKCNT    (1u << 1)
++#define EM_TM_AUTO12    (1u << 2)
++#define EM_TM_READ      (1u << 4)
++#define EM_TM_MULTI     (1u << 5)
++#define EM_CMD(i, f)    ((((uint32_t)(i) << 8) | (f)) << 16)
++#define EM_R1           (0x02 | 0x08 | 0x10)
++#define EM_R1B          (0x03 | 0x08 | 0x10)
++#define EM_R1_DATA      (EM_R1 | 0x20)
++#define EM_RCA          1u
++#define EM_ADMA_CHUNK   (32u << 10)
++#define EM_SECTOR       512u
++#define EM_TIMEOUT_NS   (1ull * NSEC_PER_SEC)
++
++static inline uint32_t
++em_rd(uint32_t off)
++{
++	return *(volatile uint32_t *)(su.regs + off);
++}
++
++static inline void
++em_wr(uint32_t off, uint32_t v)
++{
++	*(volatile uint32_t *)(su.regs + off) = v;
++}
++
++static void
++em_wr8(uint32_t off, uint8_t v)
++{
++	uint32_t sh = (off & 3) * 8, a = off & ~3u;
++	em_wr(a, (em_rd(a) & ~(0xffu << sh)) | ((uint32_t)v << sh));
++}
++
++/* Poll (rd(off) & mask) == want for up to ns; 0 on success. */
++static int
++em_wait(uint32_t off, uint32_t mask, uint32_t want, uint64_t ns)
++{
++	uint64_t deadline;
++	nanoseconds_to_absolutetime(ns, &deadline);
++	deadline += mach_absolute_time();
++	while ((em_rd(off) & mask) != want) {
++		if (mach_absolute_time() > deadline) {
++			return ETIMEDOUT;
++		}
++		delay(1);
++	}
++	return 0;
++}
++
++static void
++em_reset_lines(void)
++{
++	em_wr(EM_CLKTOUT, (em_rd(EM_CLKTOUT) & 0x00ffffff) | (6u << 24));  /* CMD + DAT line reset */
++	(void)em_wait(EM_CLKTOUT, 6u << 24, 0, 100 * NSEC_PER_MSEC);
++}
++
++/* SDCLK = base / 2N (N = 0: base clock). */
++static int
++em_set_clock(uint32_t n)
++{
++	uint32_t c = em_rd(EM_CLKTOUT) & 0xffff0000;
++	em_wr(EM_CLKTOUT, c);
++	uint32_t v = ((n & 0xff) << 8) | (((n >> 8) & 3) << 6) | 1;
++	em_wr(EM_CLKTOUT, c | v);
++	if (em_wait(EM_CLKTOUT, 2, 2, 100 * NSEC_PER_MSEC)) {
++		return ETIMEDOUT;
++	}
++	em_wr(EM_CLKTOUT, c | v | 4);
++	delay(2000);
++	return 0;
++}
++
++/* One command without data. Fills resp[]; R1b waits for the busy line. */
++static int
++em_cmd(uint32_t idx, uint32_t arg, uint32_t flags, uint32_t resp[4])
++{
++	if (em_wait(EM_PRESENT, EM_PS_INHIBIT, 0, 100 * NSEC_PER_MSEC)) {
++		return ETIMEDOUT;
++	}
++	em_wr(EM_INT, 0xffffffff);
++	em_wr(EM_ARG, arg);
++	em_wr(EM_XFERCMD, EM_CMD(idx, flags));
++	if (em_wait(EM_INT, EM_INT_CMD | EM_INT_ERR, EM_INT_CMD, 200 * NSEC_PER_MSEC)) {
++		em_reset_lines();
++		return EIO;
++	}
++	em_wr(EM_INT, EM_INT_CMD);
++	for (int i = 0; resp && i < 4; i++) {
++		resp[i] = em_rd(EM_RESP + 4 * i);
++	}
++	if ((flags & 3) == 3) {
++		if (em_wait(EM_INT, EM_INT_XFER | EM_INT_ERR, EM_INT_XFER, EM_TIMEOUT_NS)) {
++			em_reset_lines();
++			return EIO;
++		}
++		em_wr(EM_INT, EM_INT_XFER);
++	}
++	return 0;
++}
++
++/* Bring the card from whatever the bootloader left to transfer state, 8-bit, ~25 MHz. */
++static int
++em_init(void)
++{
++	uint32_t r[4] = { 0 };
++	int error;
++
++	em_wr(EM_INT_EN, 0xfffffeff);
++	em_wr(EM_SIG_EN, 0);
++	em_wr8(EM_HOSTCTL + 1, 0x0b);           /* SD bus power on, 1.8 V */
++	delay(1000);
++	em_wr(EM_CLKTOUT, (em_rd(EM_CLKTOUT) & 0xff00ffff) | (0xeu << 16));    /* data timeout */
++	if (em_set_clock(250)) {                /* ~400 kHz for identification */
++		return ETIMEDOUT;
++	}
++	(void)em_cmd(0, 0, 0, NULL);            /* GO_IDLE_STATE */
++	delay(2000);
++	uint32_t ocr = 0;
++	for (int i = 0; i < 200 && !(ocr & 0x80000000u); i++) {
++		if ((error = em_cmd(1, 0x40ff8080, 0x02, r))) {
++			return error;
++		}
++		ocr = r[0];
++		if (!(ocr & 0x80000000u)) {
++			delay(5000);
++		}
++	}
++	if (!(ocr & 0x80000000u)) {
++		return ETIMEDOUT;
++	}
++	if ((error = em_cmd(2, 0, 0x01 | 0x08, r)) ||           /* ALL_SEND_CID */
++	    (error = em_cmd(3, EM_RCA << 16, EM_R1, r)) ||       /* SET_RELATIVE_ADDR */
++	    (error = em_cmd(7, EM_RCA << 16, EM_R1B, r))) {     /* SELECT_CARD */
++		return error;
++	}
++	if (em_set_clock(4)) {
++		return ETIMEDOUT;
++	}
++	/* EXT_CSD BUS_WIDTH (183) = 2: 8-bit, then the host to 8-bit as well. */
++	if ((error = em_cmd(6, (3u << 24) | (183u << 16) | (2u << 8) | 1, EM_R1B, r))) {
++		return error;
++	}
++	em_wr8(EM_HOSTCTL, (uint8_t)(em_rd(EM_HOSTCTL) | 0x20));
++	printf("SWEET EMMC: card ready, ocr 0x%x, 8-bit, caps 0x%x\n", ocr, em_rd(0x40));
++	return 0;
++}
++
++/* Wait until the card is back in transfer state and ready for data (after a write). */
++static int
++em_wait_ready(void)
++{
++	uint64_t deadline;
++	nanoseconds_to_absolutetime(5ull * NSEC_PER_SEC, &deadline);
++	deadline += mach_absolute_time();
++	for (;;) {
++		uint32_t r[4];
++		int error = em_cmd(13, EM_RCA << 16, EM_R1, r);
++		if (error) {
++			return error;
++		}
++		if ((r[0] & (1u << 8)) && ((r[0] >> 9) & 0xf) == 4) {
++			return 0;
++		}
++		if (mach_absolute_time() > deadline) {
++			return ETIMEDOUT;
++		}
++		delay(100);
++	}
++}
++
++/* nsect sectors between the bounce buffer and the card, via ADMA2. */
++static int
++em_rw(uint64_t sector, uint32_t nsect, bool write)
++{
++	uint32_t len = nsect * EM_SECTOR;
++	if (nsect == 0 || len > BOUNCE_SIZE || sector > UINT32_MAX || nsect > 0xffff) {
++		return EINVAL;
++	}
++	uint64_t bounce_pa = su.dma_pa + DMA_BOUNCE;
++	if ((bounce_pa + len - 1) >> 32) {
++		return ENXIO;                   /* 32-bit ADMA2 only */
++	}
++	uint32_t *desc = (uint32_t *)(su.dma + DMA_UTRL);
++	uint32_t n = 0;
++	for (uint32_t done = 0; done < len; done += EM_ADMA_CHUNK, n++) {
++		uint32_t chunk = MIN(EM_ADMA_CHUNK, len - done);
++		desc[2 * n] = (chunk << 16) | 0x21 | ((done + chunk >= len) ? 0x02 : 0);  /* valid, tran, end */
++		desc[2 * n + 1] = (uint32_t)(bounce_pa + done);
++	}
++	dma_sync(DMA_UTRL, n * 8);
++	dma_sync(DMA_BOUNCE, len);
++	__builtin_arm_dsb(0xf);
++
++	em_wr(EM_ADMA_ADDR, (uint32_t)(su.dma_pa + DMA_UTRL));
++	em_wr(EM_ADMA_ADDR + 4, 0);
++	em_wr(EM_HOSTCTL, (em_rd(EM_HOSTCTL) & ~0x18u) | (2u << 3));    /* ADMA2, 32-bit */
++	em_wr(EM_BLK, (nsect << 16) | EM_SECTOR);
++	uint32_t idx = write ? (nsect > 1 ? 25 : 24) : (nsect > 1 ? 18 : 17);
++	uint32_t tm = EM_TM_DMA | (write ? 0 : EM_TM_READ) |
++	    (nsect > 1 ? (EM_TM_BLKCNT | EM_TM_AUTO12 | EM_TM_MULTI) : 0);
++
++	if (em_wait(EM_PRESENT, EM_PS_INHIBIT, 0, 100 * NSEC_PER_MSEC)) {
++		return ETIMEDOUT;
++	}
++	em_wr(EM_INT, 0xffffffff);
++	em_wr(EM_ARG, (uint32_t)sector);
++	em_wr(EM_XFERCMD, EM_CMD(idx, EM_R1_DATA) | tm);
++	int error = em_wait(EM_INT, EM_INT_CMD | EM_INT_ERR, EM_INT_CMD, 200 * NSEC_PER_MSEC);
++	if (!error) {
++		error = em_wait(EM_INT, EM_INT_XFER | EM_INT_ERR, EM_INT_XFER, EM_TIMEOUT_NS);
++	}
++	if (error || (em_rd(EM_INT) & EM_INT_ERR)) {
++		printf("SWEET EMMC: %s of %u sectors at 0x%llx failed: int 0x%x pres 0x%x\n",
++		    write ? "write" : "read", nsect, sector, em_rd(EM_INT), em_rd(EM_PRESENT));
++		em_reset_lines();
++		return EIO;
++	}
++	em_wr(EM_INT, 0xffffffff);
++	__builtin_arm_dsb(0xf);
++	if (!write) {
++		dma_sync(DMA_BOUNCE, len);
++		return 0;
++	}
++	return em_wait_ready();
++}
++
++/*
++ * GPT on 512-byte sectors: find a partition by name; sets first_block / nblocks in
++ * 4 KiB device blocks (the partition must start on a 4 KiB boundary).
++ */
++static int
++em_find_partition(const char *want)
++{
++	const uint8_t *b = (const uint8_t *)(su.dma + DMA_BOUNCE);
++	int error = em_rw(1, 1, false);
++	if (error) {
++		return error;
++	}
++	if (memcmp(b, "EFI PART", 8) != 0) {
++		printf("SWEET EMMC: no GPT\n");
++		return ENXIO;
++	}
++	uint64_t entry_lba;
++	uint32_t nent, esz;
++	memcpy(&entry_lba, b + 72, 8);
++	memcpy(&nent, b + 80, 4);
++	memcpy(&esz, b + 84, 4);
++	if (esz != 128 || nent == 0 || nent * esz > BOUNCE_SIZE) {
++		printf("SWEET EMMC: unsupported GPT entries %u x %u\n", nent, esz);
++		return ENXIO;
++	}
++	error = em_rw(entry_lba, (nent * esz + EM_SECTOR - 1) / EM_SECTOR, false);
++	if (error) {
++		return error;
++	}
++	for (uint32_t i = 0; i < nent; i++) {
++		const uint8_t *e = b + i * esz;
++		char name[37];
++		unsigned c;
++		for (c = 0; c < 36; c++) {
++			uint16_t ch = (uint16_t)(e[56 + 2 * c] | e[57 + 2 * c] << 8);
++			if (ch == 0 || ch > 0x7f) {
++				break;
++			}
++			name[c] = (char)ch;
++		}
++		name[c] = 0;
++		if (strcmp(name, want) != 0) {
++			continue;
++		}
++		uint64_t first, last;
++		memcpy(&first, e + 32, 8);
++		memcpy(&last, e + 40, 8);
++		if (last < first || (first % 8) != 0) {
++			printf("SWEET EMMC: partition \"%s\" not 4 KiB aligned (first sector 0x%llx)\n", want, first);
++			return ENXIO;
++		}
++		su.first_block = first / 8;
++		su.nblocks = (last - first + 1) / 8;
++		return 0;
++	}
++	printf("SWEET EMMC: no GPT partition named \"%s\"\n", want);
++	return ENOENT;
++}
++
+ /*
+  * One SCSI command in slot 0, data (if any) to/from the bounce buffer
+  * (to the device when write is set). Returns 0 or an errno.
+@@ -260,6 +569,9 @@ ufs_scsi(const uint8_t *cdb, unsigned cdb_len, uint32_t len, bool write)
+ static int
+ ufs_read_blocks(uint64_t lba, uint32_t count)
+ {
++	if (su.emmc) {
++		return em_rw(lba * 8, count * 8, false);
++	}
+ 	if (lba > UINT32_MAX || count > BOUNCE_SIZE / UFS_BLOCK) {
+ 		return EINVAL;
+ 	}
+@@ -284,6 +596,9 @@ ufs_write_blocks(uint64_t lba, uint32_t count)
+ 		printf("SWEET UFS: refusing write of %u blocks at 0x%llx\n", count, lba);
+ 		return EPERM;
+ 	}
++	if (su.emmc) {
++		return em_rw(lba * 8, count * 8, true);
++	}
+ 	uint8_t cdb[10] = {
+ 		0x2a, 0,
+ 		(uint8_t)(lba >> 24), (uint8_t)(lba >> 16), (uint8_t)(lba >> 8), (uint8_t)lba,
+@@ -295,6 +610,9 @@ ufs_write_blocks(uint64_t lba, uint32_t count)
+ static int
+ ufs_sync_cache(void)
+ {
++	if (su.emmc) {
++		return 0;               /* writes are complete when the card leaves programming state */
++	}
+ 	static const uint8_t cdb[10] = { 0x35 };       /* SYNCHRONIZE CACHE(10), whole LUN */
+ 	return ufs_scsi(cdb, sizeof(cdb), 0, false);
+ }
+@@ -592,10 +910,11 @@ sweet_ufs_init(void)
+ 	char want[64] = "userdata";
+ 	int error;
+ 
+-	if (SecureDTLookupEntry(NULL, "/sweet-ufs", &node) != kSuccess ||
++	bool emmc = (SecureDTLookupEntry(NULL, "/sweet-emmc", &node) == kSuccess);
++	if ((!emmc && SecureDTLookupEntry(NULL, "/sweet-ufs", &node) != kSuccess) ||
+ 	    SecureDTGetProperty(node, "reg", (void const **)&reg, &size) != kSuccess ||
+ 	    size < 2 * sizeof(uintptr_t)) {
+-		printf("SWEET UFS: no /sweet-ufs node in the device tree\n");
++		printf("SWEET UFS: no /sweet-ufs or /sweet-emmc node in the device tree\n");
+ 		return ENXIO;
+ 	}
+ 	PE_parse_boot_argn("ufsroot", want, sizeof(want));
+@@ -608,7 +927,9 @@ sweet_ufs_init(void)
+ 	su.wait = (wait == 1);
+ 
+ 	su.regs = ml_io_map(reg[0], reg[1]);
+-	if (kmem_alloc_contig(kernel_map, &su.dma, DMA_SIZE, PAGE_MASK, 0, 0,
++	/* The eMMC host uses 32-bit ADMA2 descriptors: keep its DMA memory below 4 GiB. */
++	if (kmem_alloc_contig(kernel_map, &su.dma, DMA_SIZE, PAGE_MASK,
++	    emmc ? (ppnum_t)(0xffffffffull >> PAGE_SHIFT) : 0, 0,
+ 	    KMA_DATA | KMA_ZERO | KMA_PERMANENT, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
+ 		printf("SWEET UFS: no contiguous DMA memory\n");
+ 		return ENOMEM;
+@@ -622,15 +943,23 @@ sweet_ufs_init(void)
+ 	su.secsize = DEV_BSIZE;
+ 
+ 	lck_mtx_lock(&sweet_ufs_lock);
+-	error = ufs_take_over_host();
+-	if (!error) {
+-		static const uint8_t tur[6] = { 0x00 };
+-		/* The first command after the bootloader may report a unit attention. */
+-		for (int i = 0; i < 3 && (error = ufs_scsi(tur, sizeof(tur), 0, false)); i++) {
++	if (emmc) {
++		su.emmc = true;
++		error = em_init();
++		if (!error) {
++			error = em_find_partition(want);
++		}
++	} else {
++		error = ufs_take_over_host();
++		if (!error) {
++			static const uint8_t tur[6] = { 0x00 };
++			/* The first command after the bootloader may report a unit attention. */
++			for (int i = 0; i < 3 && (error = ufs_scsi(tur, sizeof(tur), 0, false)); i++) {
++			}
++		}
++		if (!error) {
++			error = ufs_find_partition(want);
+ 		}
+-	}
+-	if (!error) {
+-		error = ufs_find_partition(want);
+ 	}
+ 	lck_mtx_unlock(&sweet_ufs_lock);
+ 	if (error) {
+@@ -656,10 +985,16 @@ sweet_ufs_init(void)
+ 	    su.writable ? "read-write" : "read-only", su.dma_pa);
+ 	sweet_log_start();
+ 	sweet_sample_start();
+-	/* Input drivers (HID services in iokit/Kernel/arm/hid/SweetHID.cpp). */
+-	sweet_keys_init();
+-	sweet_touch_init();
+-	sweet_usb_probe();
++	/*
++	 * Input and USB drivers (HID services in iokit/Kernel/arm/hid/SweetHID.cpp) poke SPMI, GENI
++	 * and USB registers at redmi-sweet addresses: skip them on the Pixel 3a, where the same
++	 * addresses may be unclocked or absent (an external abort would panic).
++	 */
++	if (!su.emmc) {
++		sweet_keys_init();
++		sweet_touch_init();
++		sweet_usb_probe();
++	}
+ 	return 0;
+ }
+ 
