@@ -11,8 +11,15 @@
 #include "mmu.h"
 #include "loader.h"
 #include "ufs.h"
+#ifdef SARGO
+#include "emmc.h"
+#endif
 
+#ifdef SARGO
+#define IMEM_RESTART_REASON	0x146bf65cUL	/* sdm670 imem@146bf000 + 0x65c */
+#else
 #define IMEM_RESTART_REASON	0x146aa65cUL	/* qcom,msm-imem restart_reason@65c */
+#endif
 #define RESTART_BOOTLOADER	0x77665500U
 #define PSHOLD			0x0c264000UL
 
@@ -377,12 +384,17 @@ void shim_main(uint64_t dtb)
 	/* An xnu payload in the ramdisk means: boot it (MMU stays off). */
 	stage = "loader";
 	con_clear(RED);
+	#ifdef SARGO
+	con_str("SHIM", "sargo (Pixel 3a) bring-up");
+#else
 	con_str("SHIM", "sweet milestone 4: xnu loader");
+#endif
 	con_skip();
 	const char *why = loader_boot(dtb);
 	con_str("LOADER", why);
 	con_skip();
 
+#ifndef SARGO	/* the 3a has eMMC, not UFS: skip the UFS probe (it would hang on absent registers) */
 	/* No payload: probe the internal UFS while the MMU is still off. */
 	stage = "ufs";
 	test_ufs();
@@ -391,6 +403,15 @@ void shim_main(uint64_t dtb)
 	con_str("UFS", "probe done, reset in ~3 min");
 	delay_ms(180000);
 	reset(20);
+#else
+	/* Pixel 3a: probe the eMMC (sdhci-msm) while the MMU is still off, keep it on screen 2 min. */
+	stage = "emmc";
+	test_emmc();
+	con_skip();
+	con_str("EMMC", "probe done; hold power to reboot");
+	for (;;)	/* no reset: the 3a's IMEM reboot-to-bootloader flag does not work */
+		__asm__ volatile("wfe");
+#endif
 
 	stage = "fill off";
 	uint64_t fill_off = ticks_fill(RED);

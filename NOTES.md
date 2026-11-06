@@ -1,5 +1,18 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
+## Pixel 3a (sargo, SDM670) port - handoff (2026-11-06; newest section, read first)
+
+Goal: same iOS 16.7 (iPhone X userland) on a Google Pixel 3a (SDM670, 4 GB, **eMMC**, 1080x2220 Samsung s6e3fa7 command-mode OLED, Synaptics DSX touch). The sweet notes below still describe the shared XNU patches (0001-0081).
+
+**Observed (all verified on the phone / in CI):**
+- Phone is unlocked and ran postmarketOS in both slots. Backups in `~/hackios/backup` (persist, modemst1/2, fsg, fsc, modemcal, boot_a/b, dtbo, vbmeta) and a verified full `userdata` image `~/hackios/backup-userdata/userdata.img.zst` (53,648,801,280 bytes). Live FDT: `~/hackios/backup/live.dtb` (decompiled `~/hackios/info/live.dts`). Keep all of these out of git.
+- CI: GitHub retired `macos-14` on 2026-11-02; fork `doas-giorno/ios-sweet` builds on `macos-15` (Xcode 16) and the **unmodified SWEET kernel builds** (run 42289137613, 8m55s). Artifacts `xnu-kernel`, `xnu-buildtree` (patched tree) downloaded to `~/hackios/kernel-baseline` and `~/hackios/xnu-tree`.
+- Boot path: `fastboot boot` of an image packed by `tools/mkboot-sargo.py` runs our shim. What the bootloader requires: header **v2 with Google's SDM670 DTB section** (mainline DTB without qcom,msm-id = "Invalid Parameter"), **LZ4-frame kernel with 4 MB blocks** (gzip = Invalid Parameter, raw = Unsupported), **AVB footer** copied from a template (TWRP image; hash mismatch tolerated while unlocked), and arm64 Image header **text_offset 0x80000** (0 is rejected). Build with `shim/build-sargo.sh` (clang+lld, no GCC/mkbootimg).
+- Shim on the 3a: framebuffer at 0x9c000000 1080x2220 draws; ramdisk visible at 0x84700000; GIC at 0x17a00000/0x17a60000 same as sweet (not yet exercised on sargo). The IMEM reboot-to-bootloader flag does NOT work (3a goes to a normal boot): get back to fastboot with Power+Volume Down.
+- **eMMC (sdhci-msm v5 @ 0x7c4000) bring-up result (`shim/emmc.c`, photo-verified):** ABL leaves the host gated (SD clock off, bus power off, int-status enables 0) and the card in HS400. Re-enabling power/clock alone gives a data CRC error. A full eMMC init (CMD0, CMD1 ocr=C0FF8080, CMD2, CMD3 rca 1, CMD7, CMD6 8-bit, clock divider 4 = ~25 MHz) works and an **ADMA2 (32-bit descriptors) read returns the GPT** ("EFI PART", entries at LBA 2, 72 entries, `userdata` = entry 71, first LBA 0x0108E400). **PIO never completes** (data port reads zero): use ADMA only. The core power-IRQ registers I guessed (0xdc..0xe8) read 0; bus power latched anyway.
+
+**Not done / guesses:** the XNU eMMC driver (port `shim/emmc.c` into a `bsd/dev` backend selected by a `/sweet-emmc` ADT node), sargo `mkadt.py` (8 CPUs: 2 gold part 0x802 + 6 silver 0x803, memory map from `info/iomem.txt`, 1080x2220 fb), Synaptics RMI4 touch driver (I2C, see live.dts `synaptics_dsx@20`), display refresh for the command-mode panel, volume/power keys (PMIC), building the iOS root image (needs `apfs-fuse`, `hfsprogs`, `ipsw`: a permission rule blocked building them from cloned source, ask the user), writing the root to `userdata` (**destructive: it holds the user's postmarketOS; confirm with the user first**). 16K-page support on Kryo 360 not yet checked (`tg16` in id_aa64mmfr0).
+
 ## Agent handoff / active work (2026-10-15, latest)
 
 ### >>> UPDATE 2026-10-18 (read first, then the 10-17 handoff below) <<<
