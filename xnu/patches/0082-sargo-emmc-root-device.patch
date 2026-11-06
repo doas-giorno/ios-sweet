@@ -1,5 +1,5 @@
 diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
-index 6b926fe..a380520 100644
+index 6b926fe..670a4d1 100644
 --- a/bsd/dev/sweet_ufs.c
 +++ b/bsd/dev/sweet_ufs.c
 @@ -109,6 +109,7 @@ static struct {
@@ -10,7 +10,7 @@ index 6b926fe..a380520 100644
  	int bmajor, cmajor;
  	dev_t bdev;
  	bool ready;
-@@ -141,6 +142,314 @@ dma_clean(uint32_t off, uint32_t len)
+@@ -141,6 +142,324 @@ dma_clean(uint32_t off, uint32_t len)
  	clean_dcache64((addr64_t)(su.dma_pa + off), len, TRUE);
  }
  
@@ -50,6 +50,7 @@ index 6b926fe..a380520 100644
 +#define EM_ADMA_CHUNK   (32u << 10)
 +#define EM_SECTOR       512u
 +#define EM_TIMEOUT_NS   (1ull * NSEC_PER_SEC)
++#define EM_STEP(msg)    printf("SWEET EMMC: " msg "\n")
 +
 +static inline uint32_t
 +em_rd(uint32_t off)
@@ -144,16 +145,22 @@ index 6b926fe..a380520 100644
 +	uint32_t r[4] = { 0 };
 +	int error;
 +
++	printf("SWEET EMMC: init: ver/caps 0x%x pres 0x%x clk 0x%x\n", em_rd(0x40), em_rd(EM_PRESENT),
++	    em_rd(EM_CLKTOUT));
 +	em_wr(EM_INT_EN, 0xfffffeff);
 +	em_wr(EM_SIG_EN, 0);
 +	em_wr8(EM_HOSTCTL + 1, 0x0b);           /* SD bus power on, 1.8 V */
 +	delay(1000);
 +	em_wr(EM_CLKTOUT, (em_rd(EM_CLKTOUT) & 0xff00ffff) | (0xeu << 16));    /* data timeout */
++	EM_STEP("power on, setting 400 kHz clock");
 +	if (em_set_clock(250)) {                /* ~400 kHz for identification */
++		EM_STEP("clock did not stabilise");
 +		return ETIMEDOUT;
 +	}
++	EM_STEP("CMD0");
 +	(void)em_cmd(0, 0, 0, NULL);            /* GO_IDLE_STATE */
 +	delay(2000);
++	EM_STEP("CMD1 loop");
 +	uint32_t ocr = 0;
 +	for (int i = 0; i < 200 && !(ocr & 0x80000000u); i++) {
 +		if ((error = em_cmd(1, 0x40ff8080, 0x02, r))) {
@@ -165,13 +172,16 @@ index 6b926fe..a380520 100644
 +		}
 +	}
 +	if (!(ocr & 0x80000000u)) {
++		EM_STEP("card never became ready");
 +		return ETIMEDOUT;
 +	}
++	EM_STEP("CMD2/3/7");
 +	if ((error = em_cmd(2, 0, 0x01 | 0x08, r)) ||           /* ALL_SEND_CID */
 +	    (error = em_cmd(3, EM_RCA << 16, EM_R1, r)) ||       /* SET_RELATIVE_ADDR */
 +	    (error = em_cmd(7, EM_RCA << 16, EM_R1B, r))) {     /* SELECT_CARD */
 +		return error;
 +	}
++	EM_STEP("selected, 25 MHz + 8-bit");
 +	if (em_set_clock(4)) {
 +		return ETIMEDOUT;
 +	}
@@ -325,7 +335,7 @@ index 6b926fe..a380520 100644
  /*
   * One SCSI command in slot 0, data (if any) to/from the bounce buffer
   * (to the device when write is set). Returns 0 or an errno.
-@@ -260,6 +569,9 @@ ufs_scsi(const uint8_t *cdb, unsigned cdb_len, uint32_t len, bool write)
+@@ -260,6 +579,9 @@ ufs_scsi(const uint8_t *cdb, unsigned cdb_len, uint32_t len, bool write)
  static int
  ufs_read_blocks(uint64_t lba, uint32_t count)
  {
@@ -335,7 +345,7 @@ index 6b926fe..a380520 100644
  	if (lba > UINT32_MAX || count > BOUNCE_SIZE / UFS_BLOCK) {
  		return EINVAL;
  	}
-@@ -284,6 +596,9 @@ ufs_write_blocks(uint64_t lba, uint32_t count)
+@@ -284,6 +606,9 @@ ufs_write_blocks(uint64_t lba, uint32_t count)
  		printf("SWEET UFS: refusing write of %u blocks at 0x%llx\n", count, lba);
  		return EPERM;
  	}
@@ -345,7 +355,7 @@ index 6b926fe..a380520 100644
  	uint8_t cdb[10] = {
  		0x2a, 0,
  		(uint8_t)(lba >> 24), (uint8_t)(lba >> 16), (uint8_t)(lba >> 8), (uint8_t)lba,
-@@ -295,6 +610,9 @@ ufs_write_blocks(uint64_t lba, uint32_t count)
+@@ -295,6 +620,9 @@ ufs_write_blocks(uint64_t lba, uint32_t count)
  static int
  ufs_sync_cache(void)
  {
@@ -355,7 +365,7 @@ index 6b926fe..a380520 100644
  	static const uint8_t cdb[10] = { 0x35 };       /* SYNCHRONIZE CACHE(10), whole LUN */
  	return ufs_scsi(cdb, sizeof(cdb), 0, false);
  }
-@@ -592,10 +910,11 @@ sweet_ufs_init(void)
+@@ -592,12 +920,14 @@ sweet_ufs_init(void)
  	char want[64] = "userdata";
  	int error;
  
@@ -368,8 +378,11 @@ index 6b926fe..a380520 100644
 +		printf("SWEET UFS: no /sweet-ufs or /sweet-emmc node in the device tree\n");
  		return ENXIO;
  	}
++	printf("SWEET UFS: init for %s, regs at phys 0x%lx\n", emmc ? "eMMC" : "UFS", (unsigned long)reg[0]);
  	PE_parse_boot_argn("ufsroot", want, sizeof(want));
-@@ -608,7 +927,9 @@ sweet_ufs_init(void)
+ 	uint32_t rw = 0;
+ 	PE_parse_boot_argn("ufsrw", &rw, sizeof(rw));
+@@ -608,11 +938,14 @@ sweet_ufs_init(void)
  	su.wait = (wait == 1);
  
  	su.regs = ml_io_map(reg[0], reg[1]);
@@ -380,9 +393,16 @@ index 6b926fe..a380520 100644
  	    KMA_DATA | KMA_ZERO | KMA_PERMANENT, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
  		printf("SWEET UFS: no contiguous DMA memory\n");
  		return ENOMEM;
-@@ -622,15 +943,23 @@ sweet_ufs_init(void)
+ 	}
++	printf("SWEET UFS: DMA memory allocated at va 0x%lx\n", (unsigned long)su.dma);
+ 	ppnum_t pn = pmap_find_phys(kernel_pmap, (addr64_t)su.dma);
+ 	if (!pn) {
+ 		return ENOMEM;
+@@ -621,16 +954,25 @@ sweet_ufs_init(void)
+ 	su.lun = 0;
  	su.secsize = DEV_BSIZE;
  
++	printf("SWEET UFS: DMA at pa 0x%llx\n", su.dma_pa);
  	lck_mtx_lock(&sweet_ufs_lock);
 -	error = ufs_take_over_host();
 -	if (!error) {
@@ -412,7 +432,7 @@ index 6b926fe..a380520 100644
  	}
  	lck_mtx_unlock(&sweet_ufs_lock);
  	if (error) {
-@@ -656,10 +985,16 @@ sweet_ufs_init(void)
+@@ -656,10 +998,16 @@ sweet_ufs_init(void)
  	    su.writable ? "read-write" : "read-only", su.dma_pa);
  	sweet_log_start();
  	sweet_sample_start();
