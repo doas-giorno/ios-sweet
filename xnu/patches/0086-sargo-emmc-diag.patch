@@ -1,0 +1,24 @@
+diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
+index 8b531c2..c6ce1c4 100644
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -581,6 +581,19 @@ ufs_read_blocks(uint64_t lba, uint32_t count)
+ {
+ 	if (su.emmc) {
+ 		static int dbg_reads;
++		static bool dbg_diag;
++		if (!dbg_diag) {
++			dbg_diag = true;
++			static const uint64_t secs[] = { 0, 2, 17359872, 17359874, 17359872 + 8 };
++			uint8_t *d = (uint8_t *)(su.dma + DMA_BOUNCE);
++			for (unsigned i = 0; i < 5; i++) {
++				memset(d, 0xa5, 512);
++				dma_sync(DMA_BOUNCE, 512);
++				int e = em_rw(secs[i], 1, false);
++				printf("SWEET DIAG: sec %llu err %d arg 0x%x r1 0x%x: %02x%02x%02x%02x %02x%02x%02x%02x @510 %02x%02x\n",
++				    secs[i], e, em_rd(EM_ARG), em_rd(EM_RESP), d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7], d[510], d[511]);
++			}
++		}
+ 		int rerr = em_rw(lba * 8, count * 8, false);
+ 		if (dbg_reads++ < 6) {
+ 			const uint8_t *d = (const uint8_t *)(su.dma + DMA_BOUNCE);
