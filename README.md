@@ -34,6 +34,10 @@ As of **2026-10-18** the phone boots to the **iOS home screen**. You can unlock 
 - **Slow boot:** about 4 minutes on the Apple logo.
 - **Security is off:** permissive code signing (AMFI) and sandbox policies, a stub AppleKeyStore, no data protection. Do not put anything personal on it.
 
+## Other devices
+
+- **Google Pixel 3a (`sargo`, SDM670, eMMC):** XNU boots, mounts an HFSX root from `userdata` and runs launchd/backboardd to the first-boot migration screen. See [docs/sargo.md](docs/sargo.md).
+
 ## How it boots
 
 ```
