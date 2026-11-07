@@ -1,0 +1,12 @@
+diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
+index 702a4ed..fcfce96 100644
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -1031,6 +1031,7 @@ sweet_ufs_init(void)
+ 		sweet_usb_probe();
+ 	} else {
+ 		sweet_touch_init();     /* Pixel 3a: Synaptics RMI4 on the same GENI SE */
++		sweet_keys_init();      /* power + volume-down: PM660 SID0 PON RT_STS (read only) */
+ 	}
+ 	return 0;
+ }
