@@ -1,0 +1,50 @@
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+index 7da731a..19b1743 100644
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -579,6 +579,22 @@ sp_write(uint16_t apid, uint16_t addr, uint8_t val)
+ 	return false;
+ }
+ 
++/* SDA/SCL levels as plain GPIO inputs with no pull / pull-up / pull-down (external pull-ups => high). */
++static void
++sargo_levels(const char *tag)
++{
++	for (unsigned pin = 6; pin <= 7; ++pin) {
++		unsigned lvl[3];
++		static const unsigned pulls[3] = {0, 3, 1};
++		for (unsigned i = 0; i < 3; ++i) {
++			touch_gpio(pin, 0, pulls[i], 0, false, false);
++			touch_wait(2);
++			lvl[i] = touch_rd(st.gpio, TOUCH_GPIO_IO(pin)) & 1u;
++		}
++		printf("SWEET TOUCH: %s gpio%u level nopull=%u pullup=%u pulldown=%u\n", tag, pin, lvl[0], lvl[1], lvl[2]);
++	}
++}
++
+ /* Turn the touch power switch (PM660 GPIO12, LV/MV pad) on: output, value high. */
+ static void
+ sargo_power_on(void)
+@@ -812,17 +828,19 @@ touch_thread(void *arg, wait_result_t result)
+ 		    touch_rd(st.gpio, TOUCH_GPIO_IO(SARGO_SWITCH)));
+ 		touch_gpio(SARGO_IRQ, 0, 0, 2, false, false);   /* input, no pull */
+ 		touch_gpio(SARGO_SWITCH, 0, 0, 2, true, false); /* output low */
++		sargo_levels("before power");
+ 		{
+ 			int pmic = 1;
+ 			(void)PE_parse_boot_argn("sweettouchpmic", &pmic, sizeof(pmic));
+ 			if (pmic) {
+ 				sargo_power_on();
+-				touch_wait(20);
++				touch_wait(100);
+ 			}
+ 		}
++		sargo_levels("after power");
+ 		touch_gpio(SARGO_RST, 0, 0, 2, true, false);    /* hold in reset */
+-		touch_gpio(6, 1, 0, 0, false, false);           /* qup9 SDA/SCL */
+-		touch_gpio(7, 1, 0, 0, false, false);
++		touch_gpio(6, 1, 3, 0, false, false);           /* qup9 SDA/SCL, internal pull-up as fallback */
++		touch_gpio(7, 1, 3, 0, false, false);
+ 		touch_wait(20);
+ 		touch_gpio(SARGO_RST, 0, 0, 2, true, true);     /* release (vendor: 1 ms low, 20 ms) */
+ 		touch_wait(300);
