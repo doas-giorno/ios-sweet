@@ -71,7 +71,7 @@ diff --git a/osfmk/kern/thread.c b/osfmk/kern/thread.c
 index 384ef23..e290c96 100644
 --- a/osfmk/kern/thread.c
 +++ b/osfmk/kern/thread.c
-@@ -4252,3 +4252,23 @@ dtrace_thread_didexec(thread_t thread)
+@@ -4252,3 +4252,25 @@ dtrace_thread_didexec(thread_t thread)
  	thread->t_dtrace_flags |= TH_DTRACE_EXECSUCCESS;
  }
  #endif /* CONFIG_DTRACE */
