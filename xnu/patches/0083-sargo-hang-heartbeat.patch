@@ -2,7 +2,7 @@ diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
 index 670a4d1..26d9802 100644
 --- a/bsd/dev/sweet_ufs.c
 +++ b/bsd/dev/sweet_ufs.c
-@@ -1168,4 +1168,44 @@ sweet_ufs_rootdev(dev_t *dev)
+@@ -1168,4 +1168,46 @@ sweet_ufs_rootdev(dev_t *dev)
  	*dev = su.bdev;
  	return 0;
  }
@@ -24,7 +24,9 @@ index 670a4d1..26d9802 100644
 +		uint64_t until = mach_absolute_time() + sec;
 +		while (mach_absolute_time() < until) {
 +		}
-+		printf("SWEET HB %u: t=%llu\n", n, mach_absolute_time());
++		if (n <= 4 || n % 60 == 0) {
++			printf("SWEET HB %u: t=%llu\n", n, mach_absolute_time());
++		}
 +		if (n == 5 || n == 12) {
 +			printf("SWEET HB: slide 0x%lx\n", (unsigned long)vm_kernel_slide);
 +			sweet_thread_dump();
