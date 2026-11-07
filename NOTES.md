@@ -1,5 +1,7 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
+**2026-11-07 sargo milestone: XNU boots on the 3a through the root mount (Claude).** Root cause of the post-AppleCLCD stall: the sargo ADT cpu nodes said `qcom,kryo360` but SweetCPU's personality is `IONameMatch qcom,kryo470` (iokit/KernelConfigTables.cpp), so nobody called `ml_set_max_cpus` and `kperf_init_early -> ml_wait_max_cpus` blocked the boot thread before `bsd_init`. Fixed in `tools/mkadt.py` (always kryo470). Diagnosis used patches 0083 (heartbeat; the thread dump is useless, ignore) and 0084 (printf trace through bsd_init). Result on hardware (`sargo-xnu5.img`, kernel 0084): CPU0 alive, bsd_init runs, `SWEET UFS: init for eMMC`, card ready 25 MHz 8-bit, `userdata` found (51163 MiB, read-only), `BSD root: ufsroot0`, `hfs_mount` fails with signature 2873 because userdata still holds postmarketOS. Also: QEMU aarch64 is installed (`/etc/portage/package.use/qemu-aarch64`); `tools/qemu-sweet.py` with `mkadt.py --qemu` runs these kernels. NEXT: build the HFS+ iOS root (tools/mkiosroot.sh; needs ipsw, apfs-fuse, mkfs.hfsplus) and write it to a partition (userdata erases pmOS; backup in ~/hackios/backup-userdata).
+
 ## Pixel 3a (sargo, SDM670) port - handoff (2026-11-06; newest section, read first)
 
 Goal: same iOS 16.7 (iPhone X userland) on a Google Pixel 3a (SDM670, 4 GB, **eMMC**, 1080x2220 Samsung s6e3fa7 command-mode OLED, Synaptics DSX touch). The sweet notes below still describe the shared XNU patches (0001-0081).
