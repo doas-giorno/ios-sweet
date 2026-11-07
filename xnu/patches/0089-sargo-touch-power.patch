@@ -1,0 +1,90 @@
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+index 767d3a3..7da731a 100644
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -43,6 +43,7 @@ void sweet_touch_init(void);
+ #define SP_CORE_PA       0x0c440000u
+ #define SP_CNFG_PA       0x0c40a000u
+ #define SP_OBS_PA        0x0e600000u
++#define SP_CHN_PA        0x0c600000u
+ #define TOUCH_RMI        3
+ #define TOUCH_GOODIX     1
+ #define TOUCH_FTS        2
+@@ -545,6 +546,62 @@ sp_read(uint16_t apid, uint16_t addr, uint8_t *out)
+ 	return false;
+ }
+ 
++/*
++ * One-byte EXT_WRITEL through the apps write channel (v5: chnls + 0x10000 * apid;
++ * the DT chnls region is exactly 512 * 0x10000). Sequence as Linux: WDATA0, CMD, poll STATUS.
++ */
++static bool
++sp_write(uint16_t apid, uint16_t addr, uint8_t val)
++{
++	if (apid == 0xffffu || apid >= 512) {
++		return false;
++	}
++	vm_offset_t ch = ml_io_map(SP_CHN_PA + 0x10000u * apid, 0x1000);
++	if (!ch) {
++		return false;
++	}
++	*(volatile uint32_t *)(ch + 0x10) = val;
++	__asm__ volatile("dsb osh" ::: "memory");
++	*(volatile uint32_t *)(ch + 0x00) = ((uint32_t)(addr & 0xffu) << 4); /* opcode 0 = EXT_WRITEL, 1 byte */
++	__asm__ volatile("dsb osh" ::: "memory");
++	for (unsigned i = 0; i < 2000; ++i) {
++		uint32_t status = touch_rd(ch, 0x08);
++		if (status & 1u) {
++			if (status & 0x0eu) {
++				printf("SWEET TOUCH: spmi write %#x failed status=%#x\n", addr, status);
++				return false;
++			}
++			return true;
++		}
++		delay(1);
++	}
++	printf("SWEET TOUCH: spmi write %#x timed out\n", addr);
++	return false;
++}
++
++/* Turn the touch power switch (PM660 GPIO12, LV/MV pad) on: output, value high. */
++static void
++sargo_power_on(void)
++{
++	uint32_t count = touch_rd(st.sp_core, 4) & 0x7ffu;
++	uint16_t apid = sp_find_apid(0x0cb, count);
++	uint8_t mode = 0xff, en = 0, sub = 0;
++	if (!sp_read(apid, 0xcb40, &mode) || !sp_read(apid, 0xcb46, &en) || !sp_read(apid, 0xcb05, &sub)) {
++		printf("SWEET TOUCH: pm660 gpio12 unreadable; power not touched\n");
++		return;
++	}
++	if ((sub != 0x10 && sub != 0x11) || !(en & 0x80u) || (mode & 3u) != 0) {
++		printf("SWEET TOUCH: pm660 gpio12 not an enabled LV/MV input (sub=%#x en=%#x mode=%#x); power not touched\n",
++		    sub, en, mode);
++		return;
++	}
++	bool a = sp_write(apid, 0xcb44, 0x80); /* output source: normal function, value high */
++	bool b = sp_write(apid, 0xcb40, 0x01); /* digital output */
++	uint8_t m2 = 0, rt = 0;
++	bool c = sp_read(apid, 0xcb40, &m2), d = sp_read(apid, 0xcb10, &rt);
++	printf("SWEET TOUCH: pm660 gpio12 power on: write %d/%d now mode=%#x/%d rt=%#x/%d\n", a, b, m2, c, rt, d);
++}
++
+ /* Is the touch power switch (PM660 GPIO12) already on? Never writes. */
+ static void
+ sargo_power_report(void)
+@@ -755,6 +812,14 @@ touch_thread(void *arg, wait_result_t result)
+ 		    touch_rd(st.gpio, TOUCH_GPIO_IO(SARGO_SWITCH)));
+ 		touch_gpio(SARGO_IRQ, 0, 0, 2, false, false);   /* input, no pull */
+ 		touch_gpio(SARGO_SWITCH, 0, 0, 2, true, false); /* output low */
++		{
++			int pmic = 1;
++			(void)PE_parse_boot_argn("sweettouchpmic", &pmic, sizeof(pmic));
++			if (pmic) {
++				sargo_power_on();
++				touch_wait(20);
++			}
++		}
+ 		touch_gpio(SARGO_RST, 0, 0, 2, true, false);    /* hold in reset */
+ 		touch_gpio(6, 1, 0, 0, false, false);           /* qup9 SDA/SCL */
+ 		touch_gpio(7, 1, 0, 0, false, false);
