@@ -1,0 +1,16 @@
+diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
+index c6ce1c4..81995fe 100644
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -452,8 +452,9 @@ em_find_partition(const char *want)
+ 			printf("SWEET EMMC: partition \"%s\" not 4 KiB aligned (first sector 0x%llx)\n", want, first);
+ 			return ENXIO;
+ 		}
+-		su.first_block = first / 8;
+-		su.nblocks = (last - first + 1) / 8;
++		/* the first 1 MiB of userdata is rewritten with a stale GPT on every boot: the image starts 1 MiB in */
++		su.first_block = first / 8 + 256;
++		su.nblocks = (last - first + 1) / 8 - 256;
+ 		return 0;
+ 	}
+ 	printf("SWEET EMMC: no GPT partition named \"%s\"\n", want);
