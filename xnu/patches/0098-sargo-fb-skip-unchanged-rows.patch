@@ -1,0 +1,56 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index de99864..ef2d915 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -109,6 +109,10 @@ public:
+ 	uint32_t     *fXMap;                    /* panel column -> logical column */
+ 	uint32_t      fScaleW, fPadX;           /* scaled frame width and left padding (sweetfb_scale=2: even scale) */
+ 	bool          fBarsCleared;
++	uint8_t      *fPrev;                    /* last presented source rows: unchanged rows are not rescaled */
++	size_t        fPrevSize;
++	uint64_t      fPrevKey[4];
++	bool          fPrevValid;
+ 	uintptr_t     fPixels;          /* kernel mapping of the panel memory */
+ 	IOMemoryMap  *fMap;
+ 	SweetSurface *fSurface;         /* the panel memory as an IOSurface */
+@@ -430,6 +434,15 @@ AppleCLCD::present(const uint8_t *rec)
+ 				if (py1 > fHeight) {
+ 					py1 = fHeight;
+ 				}
++				uint64_t key[4] = {
++					((uint64_t)id << 32) | (uint32_t)dx, ((uint64_t)(uint32_t)dy << 32) | (uint32_t)w,
++					((uint64_t)(uint32_t)h << 32) | (uint32_t)sx, (uint64_t)(uint32_t)sy
++				};
++				if (fPrev == NULL) {
++					fPrevSize = (size_t)fLogicalW * fLogicalH * 4;
++					fPrev = (uint8_t *)IOMalloc(fPrevSize);
++				}
++				bool same = fPrevValid && fPrev != NULL && memcmp(key, fPrevKey, sizeof(key)) == 0;
+ 				for (uint32_t py = py0; py < py1; py++) {
+ 					int32_t ly = (int32_t)(((uint64_t)py * fLogicalH) / fHeight);
+ 					if (ly < dy) {
+@@ -438,6 +451,13 @@ AppleCLCD::present(const uint8_t *rec)
+ 						ly = dy + h - 1;
+ 					}
+ 					const uint32_t *srow = (const uint32_t *)(src + s->offset + (uint64_t)(sy + (ly - dy)) * s->bytesPerRow);
++					if (fPrev != NULL) {
++						uint8_t *prow = fPrev + (uint64_t)(ly - dy) * (uint64_t)w * 4;
++						if (same && memcmp(prow, srow + sx, (size_t)w * 4) == 0) {
++							continue;       /* this source row is unchanged: the panel row is already right */
++						}
++						memcpy(prow, srow + sx, (size_t)w * 4);
++					}
+ 					uint32_t *drow = (uint32_t *)(fPixels + (uint64_t)py * fRowBytes);
+ 					for (uint32_t px = px0; px < px1; px++) {
+ 						int32_t lx = (int32_t)fXMap[px];
+@@ -449,6 +469,10 @@ AppleCLCD::present(const uint8_t *rec)
+ 						drow[px] = srow[sx + (lx - dx)];
+ 					}
+ 				}
++				if (fPrev != NULL) {
++					memcpy(fPrevKey, key, sizeof(key));
++					fPrevValid = true;
++				}
+ 			}
+ 			s->release();
+ 			continue;
