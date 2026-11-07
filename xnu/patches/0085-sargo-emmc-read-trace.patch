@@ -1,0 +1,21 @@
+diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
+index e7b7163..8b531c2 100644
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -580,7 +580,15 @@ static int
+ ufs_read_blocks(uint64_t lba, uint32_t count)
+ {
+ 	if (su.emmc) {
+-		return em_rw(lba * 8, count * 8, false);
++		static int dbg_reads;
++		int rerr = em_rw(lba * 8, count * 8, false);
++		if (dbg_reads++ < 6) {
++			const uint8_t *d = (const uint8_t *)(su.dma + DMA_BOUNCE);
++			printf("SWEET EMMC: rd#%d lba 0x%llx cnt %u err %d: %02x%02x%02x%02x %02x%02x%02x%02x | @1024 %02x%02x%02x%02x\n",
++			    dbg_reads, lba, count, rerr, d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7],
++			    d[1024], d[1025], d[1026], d[1027]);
++		}
++		return rerr;
+ 	}
+ 	if (lba > UINT32_MAX || count > BOUNCE_SIZE / UFS_BLOCK) {
+ 		return EINVAL;
