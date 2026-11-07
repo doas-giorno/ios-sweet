@@ -9,9 +9,10 @@ iOS 16.7.16 (iPhone X userland) on a Pixel 3a, through the same XNU + `fastboot 
 | Boot | ABL -> `fastboot boot` shim -> XNU (nothing flashed to boot partitions) |
 | Storage | Qualcomm sdhci-msm v5 eMMC driver inside XNU (`xnu/patches/0082`), GPT lookup of `userdata`, ADMA2 reads/writes |
 | Root | 16 GiB HFSX (case-sensitive HFS+) image built from the IPSW, mounted read/write |
-| Userland | launchd, daemons and backboardd run; first-boot migration screen (Apple logo + bar) is shown |
+| Userland | launchd, daemons, backboardd and SpringBoard run; the iOS lock screen is shown (2026-11-07) |
 | Display | Bootloader framebuffer, CPU rendering (no Adreno driver) |
-| Not done | Touch (Synaptics), OLED command-mode refresh, buttons, battery, Wi-Fi/BT/audio/camera, GPU, SMP (boots with `cpus=1`) |
+| SMP | `cpus=8` boots; core count not yet confirmed on screen |
+| Not done | Touch (Synaptics), OLED command-mode refresh, buttons, battery, Wi-Fi/BT/audio/camera, GPU |
 
 ## Hardware notes
 
@@ -26,13 +27,24 @@ iOS 16.7.16 (iPhone X userland) on a Pixel 3a, through the same XNU + `fastboot 
 2. ADT: `python3 -I tools/mkadt.py shim/out/sargo.adt --sargo`
 3. Payload: `python3 -I tools/mkpayload.py kernel.development.sweet shim/out/sargo.adt shim/out/payload-sargo.bin --cmdline "debug=0xc serial=3 cpus=1 keepsyms=1 -enable_kprintf_spam -noprogress rd=ufsroot0 ufsroot=userdata ufsrw=1 rootrw=1 unentitled_ios_sim_launch=1 ignition_level=1 wdt_test=no_user_checkin launchd_unsecure_cache=1 wdt=-1 sweetfb_hz=30"`
 4. Image: `cd shim && SARGO_OUT=out/sargo-xnu.img ./build-sargo.sh out/payload-sargo.bin`
-5. Boot: `fastboot boot shim/out/sargo-xnu.img` (use `ufsrw=0 rootrw=0` for a read-only first boot).
+5. Boot: `fastboot boot shim/out/sargo-xnu.img`. Keep `ufsrw=1 rootrw=1`: in my runs a read-only root reached launchd, which then exited and panicked.
+
+## Device tree: the /product node
+
+`tools/mkadt.py` copies `/product` from the real iPhone X (D22AP) device tree. Without it SpringBoard aborts with `Failed to load bounding path bitmap data ... BoundingPathBitmap-1125x2436-375x812-3.00x`, because MobileGestalt has no `artwork-device-subtype`. Extract it from the IPSW (kept out of git):
+
+```
+ipsw img4 im4p extract DeviceTree.d22ap.im4p -o research/ipsw-x/d22ap.adt
+```
+
+then re-run `mkadt.py ... --sargo`. Only the boot image changes; no reflash.
 
 ## Root image
 
 `tools/mkiosroot.sh` builds the HFSX image from the IPSW dmgs (needs apfs-fuse, mkfs.hfsplus, rsync). Two sargo-specific steps:
 
 - **The image starts 1 MiB into `userdata`.** The first ~17 KB of the partition are rewritten with a stale GPT on every boot (cause unknown); `xnu/patches/0087` skips the first MiB.
+- **Run `tools/sweet-root-tweaks.py`** on the mounted image (loop mount with `-o force`, as root). Without it the first boot sits in the data migration for about an hour. The activation data ark is only seeded when its container exists, so re-run after the first boot.
 - **Clear the journaled bit** in the volume header (attributes at offset 4 of the header at image offset 1024: `00 00 21 00` -> `00 00 01 00`). XNU cannot create a journal on a read-only root and the mount fails otherwise.
 
 ## Writing userdata

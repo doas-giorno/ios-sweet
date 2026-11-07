@@ -263,6 +263,8 @@ def build(seed=None, qemu=False, highmem=False, sargo=False):
 
 
 if __name__ == '__main__':
+    if len(sys.argv) < 2 or sys.argv[1].startswith('-'):
+        sys.exit(__doc__)
     root = build(qemu='--qemu' in sys.argv, highmem='--highmem' in sys.argv, sargo='--sargo' in sys.argv)
     blob = adt.serialize(root)
     open(sys.argv[1], 'wb').write(blob)
