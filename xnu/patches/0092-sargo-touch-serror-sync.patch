@@ -1,0 +1,58 @@
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+index 418dd40..fc347d2 100644
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -99,11 +99,26 @@ static struct {
+ } st;
+ static int touch_sleep_chan;
+ 
++/*
++ * Pixel 3a bring-up: a posted MMIO error is reported as an SError that stays pending
++ * (PSTATE.A is masked in the kernel) until the thread is next scheduled, so the panic
++ * names the wrong place. Briefly unmask it and wait for the access to complete, so
++ * the fault lands right after the offending register access.
++ */
++static inline void
++touch_sync(void)
++{
++	if (st.sargo) {
++		__asm__ volatile("msr daifclr, #4\n\tdsb sy\n\tisb\n\tmsr daifset, #4" ::: "memory");
++	}
++}
++
+ static uint32_t
+ touch_rd(vm_offset_t base, uint32_t off)
+ {
+ 	uint32_t v = *(volatile uint32_t *)(base + off);
+ 	__asm__ volatile("dmb oshld" ::: "memory");
++	touch_sync();
+ 	return v;
+ }
+ 
+@@ -113,6 +128,7 @@ touch_wr(vm_offset_t base, uint32_t off, uint32_t val)
+ 	__asm__ volatile("dmb oshst" ::: "memory");
+ 	*(volatile uint32_t *)(base + off) = val;
+ 	__asm__ volatile("dsb osh" ::: "memory");
++	touch_sync();
+ }
+ 
+ static void
+@@ -532,6 +548,7 @@ sp_read(uint16_t apid, uint16_t addr, uint8_t *out)
+ 	uint32_t off = 0x80u * apid;
+ 	*(volatile uint32_t *)(st.sp_obs + off) = (1u << 27) | ((uint32_t)(addr & 0xffu) << 4);
+ 	__asm__ volatile("dsb osh" ::: "memory");
++	touch_sync();
+ 	for (unsigned i = 0; i < 1000; ++i) {
+ 		uint32_t status = touch_rd(st.sp_obs, off + 0x08u);
+ 		if (status & 1u) {
+@@ -562,8 +579,10 @@ sp_write(uint16_t apid, uint16_t addr, uint8_t val)
+ 	}
+ 	*(volatile uint32_t *)(ch + 0x10) = val;
+ 	__asm__ volatile("dsb osh" ::: "memory");
++	touch_sync();
+ 	*(volatile uint32_t *)(ch + 0x00) = ((uint32_t)(addr & 0xffu) << 4); /* opcode 0 = EXT_WRITEL, 1 byte */
+ 	__asm__ volatile("dsb osh" ::: "memory");
++	touch_sync();
+ 	for (unsigned i = 0; i < 2000; ++i) {
+ 		uint32_t status = touch_rd(ch, 0x08);
+ 		if (status & 1u) {
