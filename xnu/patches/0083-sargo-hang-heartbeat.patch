@@ -84,14 +84,16 @@ index 384ef23..e290c96 100644
 +{
 +	thread_t th;
 +	unsigned n = 0;
++	queue_entry_t e;
 +
-+	lck_mtx_lock(&tasks_threads_lock);
-+	qe_foreach_element(th, &threads, threads) {
-+		if (n++ >= 24) {
++	/* shortcut: unlocked walk of kernel_task's threads, stops at the first non-kernel pointer */
++	for (e = kernel_task->threads.next; e != &kernel_task->threads && n++ < 24; e = e->next) {
++		if ((uintptr_t)e < 0xfffffe0000000000ULL) {
++			printf("SWEET HB: bad link %p\n", (void *)e);
 +			break;
 +		}
++		th = (thread_t)((uintptr_t)e - offsetof(struct thread, task_threads));
 +		printf("SWEET HB: th %llu st 0x%x ev 0x%llx cont 0x%lx\n", (unsigned long long)th->thread_id,
 +		    (unsigned)th->state, (unsigned long long)th->wait_event, (unsigned long)th->continuation);
 +	}
-+	lck_mtx_unlock(&tasks_threads_lock);
 +}
