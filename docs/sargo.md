@@ -12,7 +12,8 @@ iOS 16.7.16 (iPhone X userland) on a Pixel 3a, through the same XNU + `fastboot 
 | Userland | launchd, daemons, backboardd and SpringBoard run; the iOS lock screen is shown (2026-11-07) |
 | Display | Bootloader framebuffer, CPU rendering (no Adreno driver) |
 | SMP | `cpus=8` boots; core count not yet confirmed on screen |
-| Not done | Touch (Synaptics), OLED command-mode refresh, buttons, battery, Wi-Fi/BT/audio/camera, GPU |
+| Touch | Synaptics RMI4 on GENI SE9 (patches 0088-0094); the SDM670 TLMM is tiled (NORTH 0x3900000, WEST 0x3500000) |
+| Not done | OLED command-mode refresh, buttons, battery, Wi-Fi/BT/audio/camera, GPU; the UI is slow (CPU rendering, debug output) |
 
 ## Hardware notes
 
