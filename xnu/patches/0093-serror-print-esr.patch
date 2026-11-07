@@ -1,0 +1,15 @@
+diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
+index 24f1abc..89dbc46 100644
+--- a/osfmk/arm64/sleh.c
++++ b/osfmk/arm64/sleh.c
+@@ -394,8 +394,8 @@ __dead2 __unused
+ static void
+ arm64_implementation_specific_error(arm_saved_state_t *state, uint32_t esr, vm_offset_t far)
+ {
+-#pragma unused (state, esr, far)
+-	panic_plain("Unhandled implementation specific error\n");
++	panic_plain("Unhandled implementation specific error esr=%#x pc=%#llx far=%#llx\n",
++	    esr, (unsigned long long)get_saved_state_pc(state), (unsigned long long)far);
+ }
+ 
+ #if CONFIG_KERNEL_INTEGRITY
