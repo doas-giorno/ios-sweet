@@ -1,0 +1,44 @@
+diff --git a/bsd/kern/bsd_init.c b/bsd/kern/bsd_init.c
+index bb2a2bf..ae9003d 100644
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -490,10 +490,10 @@ bsd_init(void)
+ 	platform_stall_panic_or_spin(PLATFORM_STALL_XNU_LOCATION_BSD_INIT);
+ #endif
+ 
+-#define DEBUG_BSDINIT 0
++#define DEBUG_BSDINIT 1
+ 
+ #if DEBUG_BSDINIT
+-#define bsd_init_kprintf(x, ...) kprintf("bsd_init: " x, ## __VA_ARGS__)
++#define bsd_init_kprintf(x, ...) printf("bsd_init: " x, ## __VA_ARGS__)
+ #else
+ #define bsd_init_kprintf(x, ...)
+ #endif
+diff --git a/osfmk/kern/startup.c b/osfmk/kern/startup.c
+index bec97fb..6706023 100644
+--- a/osfmk/kern/startup.c
++++ b/osfmk/kern/startup.c
+@@ -771,12 +771,14 @@ kernel_bootstrap_thread(void)
+ #ifdef  IOKIT
+ 	kernel_bootstrap_log("PE_lockdown_iokit");
+ 	PE_lockdown_iokit();
++	printf("SWEET BS: after PE_lockdown_iokit\n");
+ #endif
+ 	/*
+ 	 * max_cpus must be nailed down by the time PE_lockdown_iokit() finishes,
+ 	 * at the latest
+ 	 */
+ 	vm_set_restrictions(machine_info.max_cpus);
++	printf("SWEET BS: after vm_set_restrictions\n");
+ 
+ 
+ #if KPERF
+@@ -787,6 +789,7 @@ kernel_bootstrap_thread(void)
+ 	 *	Start the user bootstrap.
+ 	 */
+ #ifdef  MACH_BSD
++	printf("SWEET BS: calling bsd_init\n");
+ 	bsd_init();
+ #endif
+ 
