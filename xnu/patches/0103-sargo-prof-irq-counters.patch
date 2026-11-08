@@ -1,0 +1,29 @@
+diff --git a/osfmk/arm/rtclock.c b/osfmk/arm/rtclock.c
+index c15fec5..1df7623 100644
+--- a/osfmk/arm/rtclock.c
++++ b/osfmk/arm/rtclock.c
+@@ -370,6 +370,24 @@ sweet_prof_dump(unsigned top)
+ 	for (unsigned i = 0; i < SPROF_N; i++) {
+ 		total += sprof_cnt[i];
+ 	}
++	{
++		/* per-CPU interrupt activity since the last dump: what keeps the idle cores waking */
++		static uint64_t prev[MAX_CPUS][3];
++		int maxcpu = ml_get_max_cpu_number();
++		for (int c = 0; c <= maxcpu && c < MAX_CPUS; c++) {
++			cpu_data_t *cd = cpu_datap(c);
++			if (cd == NULL) {
++				continue;
++			}
++			uint64_t t = cd->cpu_stat.timer_cnt, i = cd->cpu_stat.irq_ex_cnt, p = cd->cpu_stat.ipi_cnt;
++			printf("SWEET PROF: cpu %d timer %llu irq %llu ipi %llu (since last dump)\n", c,
++			    (unsigned long long)(t - prev[c][0]), (unsigned long long)(i - prev[c][1]),
++			    (unsigned long long)(p - prev[c][2]));
++			prev[c][0] = t;
++			prev[c][1] = i;
++			prev[c][2] = p;
++		}
++	}
+ 	printf("SWEET PROF: %u samples\n", total);
+ 	for (unsigned r = 0; r < top && total != 0; r++) {
+ 		uint32_t best = 0;
