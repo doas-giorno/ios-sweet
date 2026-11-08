@@ -1,0 +1,32 @@
+name: metal
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'metal/**'
+      - '.github/workflows/metal.yml'
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build SweetMetal.bundle (iOS arm64)
+        run: |
+          cd metal
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          rm -rf out && mkdir -p out/SweetMetal.bundle
+          xcrun --sdk iphoneos clang -arch arm64 -miphoneos-version-min=16.0 -isysroot "$SDK" \
+            -bundle -fobjc-arc -O2 -framework Foundation -framework Metal \
+            -o out/SweetMetal.bundle/SweetMetal SweetMetal.m
+          cp Info.plist out/SweetMetal.bundle/Info.plist
+          codesign -f -s - out/SweetMetal.bundle || true
+          file out/SweetMetal.bundle/SweetMetal
+          (cd out && tar czf SweetMetal.bundle.tgz SweetMetal.bundle && shasum -a 256 SweetMetal.bundle.tgz > SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sweetmetal-bundle
+          path: |
+            metal/out/SweetMetal.bundle.tgz
+            metal/out/SHA256SUMS
