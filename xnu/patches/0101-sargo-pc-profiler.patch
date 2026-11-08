@@ -1,0 +1,136 @@
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+index a1993de..b2dae04 100644
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -965,10 +965,33 @@ perf_thread(void *arg, wait_result_t result)
+ 	thread_block(THREAD_CONTINUE_NULL);
+ }
+ 
++extern void sweet_prof_enable(int on);
++extern void sweet_prof_dump(unsigned top);
++
++static void
++prof_thread(void *arg, wait_result_t result)
++{
++	(void)arg;
++	(void)result;
++	touch_wait(60000);
++	sweet_prof_enable(1);
++	for (;;) {
++		touch_wait(20000);
++		sweet_prof_dump(40);
++	}
++}
++
+ void
+ sweet_perf_probe(void)
+ {
+-	int on = 1;
++	int on = 1, prof = 0;
++	(void)PE_parse_boot_argn("sweetprof", &prof, sizeof(prof));
++	if (prof) {
++		thread_t pt;
++		if (kernel_thread_start(prof_thread, NULL, &pt) == KERN_SUCCESS) {
++			thread_deallocate(pt);
++		}
++	}
+ 	(void)PE_parse_boot_argn("sweetperf", &on, sizeof(on));
+ 	for (uintptr_t i = 0; on && i < 8; i++) {
+ 		thread_t th;
+diff --git a/osfmk/arm/rtclock.c b/osfmk/arm/rtclock.c
+index 5989b48..c15fec5 100644
+--- a/osfmk/arm/rtclock.c
++++ b/osfmk/arm/rtclock.c
+@@ -319,6 +319,82 @@ clock_timebase_info(mach_timebase_info_t info)
+ /*
+  * Real-time clock device interrupt.
+  */
++
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++/*
++ * SWEET PC profiler: every timer interrupt records (pid, pc) of what was running (kernel
++ * code, including the idle loop, counts under pid 0xffff). Boot-arg sweetprof=1 enables
++ * dumping (sweet_perf_probe in bsd/dev/sweet_touch.c).
++ */
++#include <kern/task.h>
++#define SPROF_N 16384
++static volatile uint64_t sprof_key[SPROF_N];
++static volatile uint32_t sprof_cnt[SPROF_N];
++static volatile uint32_t sprof_on;
++
++void
++sweet_prof_enable(int on)
++{
++	sprof_on = on != 0;
++}
++
++static void
++sprof_sample(uintptr_t pc, unsigned user)
++{
++	if (!sprof_on || pc == 0) {
++		return;
++	}
++	uint64_t k = (user ? ((uint64_t)(uint16_t)task_pid(current_task()) << 48) : (0xffffull << 48)) |
++	    ((uint64_t)pc & 0xfffffffffff0ull);
++	unsigned i = (unsigned)((k * 0x9E3779B97F4A7C15ull) >> (64 - 14));
++	for (unsigned probe = 0; probe < 64; probe++, i = (i + 1) & (SPROF_N - 1)) {
++		uint64_t cur = sprof_key[i];
++		if (cur == 0) {
++			if (!OSCompareAndSwap64(0, k, (volatile UInt64 *)&sprof_key[i])) {
++				cur = sprof_key[i];
++			} else {
++				cur = k;
++			}
++		}
++		if (cur == k) {
++			OSIncrementAtomic((volatile SInt32 *)&sprof_cnt[i]);
++			return;
++		}
++	}
++}
++
++void
++sweet_prof_dump(unsigned top)
++{
++	uint32_t total = 0;
++	for (unsigned i = 0; i < SPROF_N; i++) {
++		total += sprof_cnt[i];
++	}
++	printf("SWEET PROF: %u samples\n", total);
++	for (unsigned r = 0; r < top && total != 0; r++) {
++		uint32_t best = 0;
++		unsigned bi = 0;
++		for (unsigned i = 0; i < SPROF_N; i++) {
++			if (sprof_cnt[i] > best) {
++				best = sprof_cnt[i];
++				bi = i;
++			}
++		}
++		if (best == 0) {
++			break;
++		}
++		uint64_t k = sprof_key[bi];
++		printf("SWEET PROF: #%u pid %u pc 0x%llx n %u (%u%%)\n", r, (unsigned)(k >> 48),
++		    (unsigned long long)(k & 0xffffffffffffull), best, best * 100 / total);
++		sprof_cnt[bi] = 0;
++	}
++	for (unsigned i = 0; i < SPROF_N; i++) {
++		sprof_cnt[i] = 0;
++		sprof_key[i] = 0;
++	}
++}
++#endif /* ARM64_BOARD_CONFIG_SWEET */
++
+ void
+ rtclock_intr(__unused unsigned int is_user_context)
+ {
+@@ -365,6 +441,9 @@ rtclock_intr(__unused unsigned int is_user_context)
+ 		    user_mode ? pc : VM_KERNEL_UNSLIDE(pc), user_mode);
+ 	}
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	sprof_sample(pc, user_mode);
++#endif
+ 	/* call the generic etimer */
+ 	timer_intr(user_mode, pc);
+ }
