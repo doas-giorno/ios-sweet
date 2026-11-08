@@ -1,0 +1,185 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index d98387f..88349e8 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -109,6 +109,8 @@ public:
+ 	uint32_t     *fXMap;                    /* panel column -> logical column */
+ 	uint32_t      fScaleW, fPadX;           /* scaled frame width and left padding (sweetfb_scale=2: even scale) */
+ 	bool          fBarsCleared;
++	uint32_t      fBright;                  /* software brightness, 256 = full (from the swap record) */
++	bool          fBrightChanged;
+ 	uint8_t      *fPrev;                    /* last presented source rows: unchanged rows are not rescaled */
+ 	size_t        fPrevSize;
+ 	uint64_t      fPrevKey[4];
+@@ -185,6 +187,7 @@ AppleCLCD::start(IOService *provider)
+ 	}
+ 	fOffX = (int32_t)(fLogicalW - fWidth) / 2;
+ 	fOffY = (int32_t)(fLogicalH - fHeight) / 2;
++	fBright = 256;
+ 	int scale = 0;
+ 	PE_parse_boot_argn("sweetfb_scale", &scale, sizeof(scale));
+ 	if (scale && !native && (fLogicalW != fWidth || fLogicalH != fHeight)) {
+@@ -336,6 +339,38 @@ AppleCLCD::swap(const uint8_t *rec)
+ {
+ 	IOLockLock(fLock);
+ 	memcpy(fPending, rec, SWEET_FB_SWAP_REC_SIZE);
++	if (rec[0x2e7]) {
++		/*
++		 * IOMobileFramebufferSwapSetBrightness: a double (0..1) at offset 0x2ec of the swap record.
++		 * Kernel code has no floating point: decode the IEEE-754 bits to a 0..256 integer.
++		 */
++		uint64_t bits;
++		memcpy(&bits, rec + 0x2ec, sizeof(bits));
++		int exp = (int)((bits >> 52) & 0x7ff) - 1023;
++		uint64_t mant = (bits & 0xfffffffffffffull) | (1ull << 52);
++		bool valid = (bits >> 63) == 0 && exp <= 0;      /* positive, <= 1.99 */
++		uint32_t f = 0;
++		if (valid && ((bits >> 52) & 0x7ff) != 0) {
++			int shift = 44 - exp;                       /* value * 256 = mant * 2^(exp - 44) */
++			f = shift >= 64 ? 0 : (uint32_t)(mant >> shift);
++		}
++		if (valid) {
++			if (f < 12) {
++				f = 12;
++			}
++			if (f > 256) {
++				f = 256;
++			}
++			if (f != fBright) {
++				static int logged;
++				if (logged++ < 40) {
++					IOLog("SWEET FB: brightness %u/256\n", f);
++				}
++				fBright = f;
++				fBrightChanged = true;
++			}
++		}
++	}
+ 	fDirty = true;
+ 	IOLockUnlock(fLock);
+ 	if ((++sweet_fb_swap_count % 1000) == 0) {
+@@ -345,6 +380,15 @@ AppleCLCD::swap(const uint8_t *rec)
+ 
+ extern "C" uint64_t mach_absolute_time(void);
+ 
++/* Software brightness: scale each colour channel by f/256 (the OLED has no backlight to dim). */
++static inline uint32_t
++sweet_dim(uint32_t p, uint32_t f)
++{
++	uint32_t rb = (((p & 0x00ff00ffu) * f) >> 8) & 0x00ff00ffu;
++	uint32_t g = ((((p >> 8) & 0xffu) * f) >> 8) & 0xffu;
++	return 0xff000000u | rb | (g << 8);
++}
++
+ /* The kernel memcmp is a slow byte loop (about 250 MB/s here): compare 64 bytes per step instead. */
+ typedef uint64_t __attribute__((aligned(1), may_alias)) sweet_u64u;
+ typedef uint32_t __attribute__((aligned(1), may_alias)) sweet_u32u;
+@@ -476,6 +520,10 @@ AppleCLCD::present(const uint8_t *rec)
+ 					fPrevSize = (size_t)fLogicalW * fLogicalH * 4;
+ 					fPrev = (uint8_t *)IOMalloc(fPrevSize);
+ 				}
++				if (fBrightChanged) {
++					fBrightChanged = false;
++					fPrevValid = false;     /* every row must be redrawn with the new brightness */
++				}
+ 				bool same = fPrevValid && fPrev != NULL && memcmp(key, fPrevKey, sizeof(key)) == 0;
+ 				for (uint32_t py = py0; py < py1; py++) {
+ 					int32_t ly = (int32_t)(((uint64_t)py * fLogicalH) / fHeight);
+@@ -502,7 +550,8 @@ AppleCLCD::present(const uint8_t *rec)
+ 						} else if (lx > dx + w - 1) {
+ 							lx = dx + w - 1;
+ 						}
+-						drow[px] = srow[sx + (lx - dx)];
++						uint32_t pix = srow[sx + (lx - dx)];
++						drow[px] = fBright < 256 ? sweet_dim(pix, fBright) : pix;
+ 					}
+ 				}
+ 				if (fPrev != NULL) {
+diff --git a/osfmk/arm/rtclock.c b/osfmk/arm/rtclock.c
+index 1df7623..1756cc4 100644
+--- a/osfmk/arm/rtclock.c
++++ b/osfmk/arm/rtclock.c
+@@ -363,10 +363,59 @@ sprof_sample(uintptr_t pc, unsigned user)
+ 	}
+ }
+ 
++#define STMR_N 1024
++static volatile uint64_t stmr_key[STMR_N];
++static volatile uint32_t stmr_cnt[STMR_N];
++
++void
++sweet_timer_func_sample(uintptr_t func)
++{
++	if (!sprof_on) {
++		return;
++	}
++	uint64_t k = (uint64_t)func;
++	unsigned i = (unsigned)((k * 0x9E3779B97F4A7C15ull) >> (64 - 10));
++	for (unsigned probe = 0; probe < 32; probe++, i = (i + 1) & (STMR_N - 1)) {
++		uint64_t cur = stmr_key[i];
++		if (cur == 0 && OSCompareAndSwap64(0, k, (volatile UInt64 *)&stmr_key[i])) {
++			cur = k;
++		}
++		if (cur == k || stmr_key[i] == k) {
++			OSIncrementAtomic((volatile SInt32 *)&stmr_cnt[i]);
++			return;
++		}
++	}
++}
++
++static void
++sprof_dump_timers(void)
++{
++	for (unsigned r = 0; r < 12; r++) {
++		uint32_t best = 0;
++		unsigned bi = 0;
++		for (unsigned i = 0; i < STMR_N; i++) {
++			if (stmr_cnt[i] > best) {
++				best = stmr_cnt[i];
++				bi = i;
++			}
++		}
++		if (best == 0) {
++			break;
++		}
++		printf("SWEET PROF: timer callout #%u func 0x%llx n %u\n", r, (unsigned long long)stmr_key[bi], best);
++		stmr_cnt[bi] = 0;
++	}
++	for (unsigned i = 0; i < STMR_N; i++) {
++		stmr_cnt[i] = 0;
++		stmr_key[i] = 0;
++	}
++}
++
+ void
+ sweet_prof_dump(unsigned top)
+ {
+ 	uint32_t total = 0;
++	sprof_dump_timers();
+ 	for (unsigned i = 0; i < SPROF_N; i++) {
+ 		total += sprof_cnt[i];
+ 	}
+diff --git a/osfmk/kern/timer_call.c b/osfmk/kern/timer_call.c
+index f8c8180..bc81f15 100644
+--- a/osfmk/kern/timer_call.c
++++ b/osfmk/kern/timer_call.c
+@@ -35,6 +35,9 @@
+ #include <kern/counter.h>
+ #include <kern/smp.h>
+ #include <kern/processor.h>
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++extern void sweet_timer_func_sample(uintptr_t func);
++#endif
+ #include <kern/timer_call.h>
+ #include <kern/timer_queue.h>
+ #include <kern/thread.h>
+@@ -992,6 +995,9 @@ timer_queue_expire_with_options(
+ 			func = call->tc_func;
+ 			param0 = call->tc_param0;
+ 			param1 = call->tc_param1;
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++			sweet_timer_func_sample((uintptr_t)func);
++#endif
+ 
+ 			simple_unlock(&call->tc_lock);
+ 			timer_queue_unlock(queue);
