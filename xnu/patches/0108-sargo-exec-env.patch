@@ -1,0 +1,60 @@
+diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
+index 68612db..0dff229 100644
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -5741,6 +5741,55 @@ exec_extract_strings(struct image_params *imgp)
+ 		imgp->ip_envc++;
+ 	}
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	/*
++	 * Boot-arg sweetenv=name1,name2: processes with these names get os_log / CFLog mirrored to
++	 * stderr (the environment Xcode sets), so their own error messages reach the sweetnull tee.
++	 */
++	{
++		static char sweet_env_names[128];
++		static int sweet_env_parsed;
++		if (!sweet_env_parsed) {
++			sweet_env_parsed = 1;
++			if (!PE_parse_boot_argn("sweetenv", sweet_env_names, sizeof(sweet_env_names))) {
++				sweet_env_names[0] = 0;
++			}
++		}
++		if (sweet_env_names[0] && imgp->ip_startargv != NULL) {
++			const char *a0 = imgp->ip_startargv;
++			const char *base = strrchr(a0, '/');
++			base = base ? base + 1 : a0;
++			size_t bl = strlen(base);
++			bool match = false;
++			for (const char *t = sweet_env_names; *t;) {
++				const char *end = strchr(t, ',');
++				size_t tl = end ? (size_t)(end - t) : strlen(t);
++				if (tl == bl && bl > 0 && strncmp(t, base, bl) == 0) {
++					match = true;
++					break;
++				}
++				if (!end) {
++					break;
++				}
++				t = end + 1;
++			}
++			if (match) {
++				static const char *const extra[] = { "OS_ACTIVITY_DT_MODE=YES", "CFLOG_FORCE_STDERR=1" };
++				for (unsigned i = 0; i < 2; i++) {
++					if (imgp->ip_argspace < new_ptr_size) {
++						break;
++					}
++					if (exec_add_user_string(imgp, CAST_USER_ADDR_T(extra[i]), UIO_SYSSPACE, TRUE) != 0) {
++						break;
++					}
++					imgp->ip_argspace -= new_ptr_size;
++					imgp->ip_envc++;
++				}
++			}
++		}
++	}
++#endif
++
+ 	/* Save space for envv[] NULL terminator */
+ 	if (imgp->ip_argspace < new_ptr_size) {
+ 		error = E2BIG;
