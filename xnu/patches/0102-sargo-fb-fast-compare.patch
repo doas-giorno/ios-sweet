@@ -1,0 +1,49 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index 1cf1333..d98387f 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -344,6 +344,35 @@ AppleCLCD::swap(const uint8_t *rec)
+ }
+ 
+ extern "C" uint64_t mach_absolute_time(void);
++
++/* The kernel memcmp is a slow byte loop (about 250 MB/s here): compare 64 bytes per step instead. */
++typedef uint64_t __attribute__((aligned(1), may_alias)) sweet_u64u;
++typedef uint32_t __attribute__((aligned(1), may_alias)) sweet_u32u;
++
++static inline bool
++sweet_rows_equal(const void *a, const void *b, size_t n)
++{
++	const sweet_u64u *x = (const sweet_u64u *)a, *y = (const sweet_u64u *)b;
++	size_t q = n / 8, i = 0;
++	for (; i + 8 <= q; i += 8) {
++		uint64_t d = (x[i] ^ y[i]) | (x[i + 1] ^ y[i + 1]) | (x[i + 2] ^ y[i + 2]) | (x[i + 3] ^ y[i + 3]) |
++		    (x[i + 4] ^ y[i + 4]) | (x[i + 5] ^ y[i + 5]) | (x[i + 6] ^ y[i + 6]) | (x[i + 7] ^ y[i + 7]);
++		if (d) {
++			return false;
++		}
++	}
++	for (; i < q; i++) {
++		if (x[i] != y[i]) {
++			return false;
++		}
++	}
++	if (n & 4) {
++		if (*(const sweet_u32u *)((const uint8_t *)a + q * 8) != *(const sweet_u32u *)((const uint8_t *)b + q * 8)) {
++			return false;
++		}
++	}
++	return true;
++}
+ extern "C" void absolutetime_to_nanoseconds(uint64_t abstime, uint64_t *result);
+ static uint64_t sweet_fb_t0, sweet_fb_acc_ns, sweet_fb_acc_n, sweet_fb_win_start, sweet_fb_rows_scaled, sweet_fb_rows_skipped;
+ 
+@@ -458,7 +487,7 @@ AppleCLCD::present(const uint8_t *rec)
+ 					const uint32_t *srow = (const uint32_t *)(src + s->offset + (uint64_t)(sy + (ly - dy)) * s->bytesPerRow);
+ 					if (fPrev != NULL) {
+ 						uint8_t *prow = fPrev + (uint64_t)(ly - dy) * (uint64_t)w * 4;
+-						if (same && memcmp(prow, srow + sx, (size_t)w * 4) == 0) {
++						if (same && sweet_rows_equal(prow, srow + sx, (size_t)w * 4)) {
+ 							sweet_fb_rows_skipped++;
+ 							continue;       /* this source row is unchanged: the panel row is already right */
+ 						}
