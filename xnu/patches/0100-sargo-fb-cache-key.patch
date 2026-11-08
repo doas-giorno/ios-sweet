@@ -1,0 +1,46 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index 5130b7e..1cf1333 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -345,7 +345,7 @@ AppleCLCD::swap(const uint8_t *rec)
+ 
+ extern "C" uint64_t mach_absolute_time(void);
+ extern "C" void absolutetime_to_nanoseconds(uint64_t abstime, uint64_t *result);
+-static uint64_t sweet_fb_t0, sweet_fb_acc_ns, sweet_fb_acc_n, sweet_fb_win_start;
++static uint64_t sweet_fb_t0, sweet_fb_acc_ns, sweet_fb_acc_n, sweet_fb_win_start, sweet_fb_rows_scaled, sweet_fb_rows_skipped;
+ 
+ void
+ AppleCLCD::present(const uint8_t *rec)
+@@ -440,7 +440,7 @@ AppleCLCD::present(const uint8_t *rec)
+ 					py1 = fHeight;
+ 				}
+ 				uint64_t key[4] = {
+-					((uint64_t)id << 32) | (uint32_t)dx, ((uint64_t)(uint32_t)dy << 32) | (uint32_t)w,
++					(uint64_t)(uint32_t)dx, ((uint64_t)(uint32_t)dy << 32) | (uint32_t)w,   /* not the surface id: iOS alternates two buffers */
+ 					((uint64_t)(uint32_t)h << 32) | (uint32_t)sx, (uint64_t)(uint32_t)sy
+ 				};
+ 				if (fPrev == NULL) {
+@@ -459,8 +459,10 @@ AppleCLCD::present(const uint8_t *rec)
+ 					if (fPrev != NULL) {
+ 						uint8_t *prow = fPrev + (uint64_t)(ly - dy) * (uint64_t)w * 4;
+ 						if (same && memcmp(prow, srow + sx, (size_t)w * 4) == 0) {
++							sweet_fb_rows_skipped++;
+ 							continue;       /* this source row is unchanged: the panel row is already right */
+ 						}
++						sweet_fb_rows_scaled++;
+ 						memcpy(prow, srow + sx, (size_t)w * 4);
+ 					}
+ 					uint32_t *drow = (uint32_t *)(fPixels + (uint64_t)py * fRowBytes);
+@@ -531,9 +533,10 @@ AppleCLCD::present(const uint8_t *rec)
+ 	}
+ 	absolutetime_to_nanoseconds(now - sweet_fb_win_start, &win);
+ 	if (win >= 5000000000ull) {
+-		IOLog("SWEET PERF: present %llu frames in %llu ms (%llu fps), avg copy %llu us\n",
++		IOLog("SWEET PERF: present %llu frames in %llu ms (%llu fps), avg copy %llu us, rows scaled %llu skipped %llu\n",
+ 		    sweet_fb_acc_n, win / 1000000, sweet_fb_acc_n * 1000000000ull / win,
+-		    sweet_fb_acc_ns / sweet_fb_acc_n / 1000);
++		    sweet_fb_acc_ns / sweet_fb_acc_n / 1000, sweet_fb_rows_scaled, sweet_fb_rows_skipped);
++		sweet_fb_rows_scaled = sweet_fb_rows_skipped = 0;
+ 		sweet_fb_acc_ns = sweet_fb_acc_n = 0;
+ 		sweet_fb_win_start = now;
+ 	}
