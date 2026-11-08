@@ -18,7 +18,7 @@ jobs:
           SDK=$(xcrun --sdk iphoneos --show-sdk-path)
           rm -rf out && mkdir -p out/SweetMetal.bundle
           xcrun --sdk iphoneos clang -arch arm64 -miphoneos-version-min=16.0 -isysroot "$SDK" \
-            -bundle -fobjc-arc -O2 -framework Foundation -framework Metal -framework UIKit -framework QuartzCore \
+            -bundle -fobjc-arc -O2 -framework Foundation -framework Metal -framework UIKit -framework QuartzCore -framework CoreGraphics \
             -o out/SweetMetal.bundle/SweetMetal SweetMetal.m
           cp Info.plist out/SweetMetal.bundle/Info.plist
           codesign -f -s - out/SweetMetal.bundle || true
