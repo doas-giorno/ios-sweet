@@ -1,0 +1,38 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index 88349e8..a125519 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -339,6 +339,20 @@ AppleCLCD::swap(const uint8_t *rec)
+ {
+ 	IOLockLock(fLock);
+ 	memcpy(fPending, rec, SWEET_FB_SWAP_REC_SIZE);
++	{
++		static int dumped;
++		bool any = false;
++		for (int i = 0x2e0; i < 0x310; i++) {
++			any = any || rec[i] != 0;
++		}
++		if (any && dumped++ < 12) {
++			IOLog("SWEET FB: swap rec 0x2e0: %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x | %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x\n",
++			    rec[0x2e0], rec[0x2e1], rec[0x2e2], rec[0x2e3], rec[0x2e4], rec[0x2e5], rec[0x2e6], rec[0x2e7],
++			    rec[0x2e8], rec[0x2e9], rec[0x2ea], rec[0x2eb], rec[0x2ec], rec[0x2ed], rec[0x2ee], rec[0x2ef],
++			    rec[0x2f0], rec[0x2f1], rec[0x2f2], rec[0x2f3], rec[0x2f4], rec[0x2f5], rec[0x2f6], rec[0x2f7],
++			    rec[0x2f8], rec[0x2f9], rec[0x2fa], rec[0x2fb], rec[0x2fc], rec[0x2fd], rec[0x2fe], rec[0x2ff]);
++		}
++	}
+ 	if (rec[0x2e7]) {
+ 		/*
+ 		 * IOMobileFramebufferSwapSetBrightness: a double (0..1) at offset 0x2ec of the swap record.
+@@ -346,6 +360,12 @@ AppleCLCD::swap(const uint8_t *rec)
+ 		 */
+ 		uint64_t bits;
+ 		memcpy(&bits, rec + 0x2ec, sizeof(bits));
++		{
++			static int rawlogged;
++			if (rawlogged++ < 60) {
++				IOLog("SWEET FB: swap brightness flag set, raw double bits 0x%llx\n", (unsigned long long)bits);
++			}
++		}
+ 		int exp = (int)((bits >> 52) & 0x7ff) - 1023;
+ 		uint64_t mant = (bits & 0xfffffffffffffull) | (1ull << 52);
+ 		bool valid = (bits >> 63) == 0 && exp <= 0;      /* positive, <= 1.99 */
