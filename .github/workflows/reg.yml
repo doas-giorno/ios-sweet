@@ -1,0 +1,27 @@
+name: reg
+on:
+  workflow_dispatch:
+  push:
+    paths: ['reg/**', '.github/workflows/reg.yml']
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build sweetreg (iOS arm64)
+        run: |
+          cd reg
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          mkdir -p out
+          xcrun --sdk iphoneos clang -arch arm64 -miphoneos-version-min=16.0 -isysroot "$SDK" \
+            -fobjc-arc -O2 -framework Foundation -o out/sweetreg sweetreg.m
+          codesign -f -s - --entitlements ent.plist out/sweetreg
+          cp com.sweet.reg.plist out/
+          file out/sweetreg
+          (cd out && tar czf sweetreg.tgz sweetreg com.sweet.reg.plist && shasum -a 256 sweetreg.tgz > SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sweetreg
+          path: |
+            reg/out/sweetreg.tgz
+            reg/out/SHA256SUMS
