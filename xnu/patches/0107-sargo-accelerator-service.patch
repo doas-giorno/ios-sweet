@@ -1,0 +1,69 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index fd22633..4d48871 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -108,6 +108,47 @@ SweetBacklight::start(IOService *provider)
+ 	return true;
+ }
+ 
++/*
++ * Metal needs an IOAccelerator registry entry: Metal.framework reads MetalPluginName and
++ * MetalPluginClassName from it, loads /System/Library/Extensions/<name>.bundle and calls
++ * -initWithAcceleratorPort: on that class. We have no GPU: this publishes the entry for the
++ * SweetMetal software bundle. Off by default (boot-arg sweetaccel=1) because every renderer then
++ * sees "a GPU exists".
++ */
++class IOAccelerator : public IOService {
++	OSDeclareDefaultStructors(IOAccelerator);
++};
++
++OSDefineMetaClassAndStructors(IOAccelerator, IOService);
++
++class SweetAccelerator : public IOAccelerator {
++	OSDeclareDefaultStructors(SweetAccelerator);
++public:
++	virtual bool start(IOService *provider) APPLE_KEXT_OVERRIDE;
++};
++
++OSDefineMetaClassAndStructors(SweetAccelerator, IOAccelerator);
++
++bool
++SweetAccelerator::start(IOService *provider)
++{
++	int on = 0;
++	PE_parse_boot_argn("sweetaccel", &on, sizeof(on));
++	if (!on) {
++		return false;
++	}
++	if (!IOAccelerator::start(provider)) {
++		return false;
++	}
++	setProperty("MetalPluginName", "SweetMetal");
++	setProperty("MetalPluginClassName", "SweetMetalDevice");
++	setProperty("IOClass", "SweetAccelerator");
++	setProperty("IOAccelRevision", 2ULL, 32);
++	registerService();
++	IOLog("SWEET ACCEL: IOAccelerator published (MetalPluginName SweetMetal)\n");
++	return true;
++}
++
+ class IOMobileFramebuffer : public IOService {
+ 	OSDeclareDefaultStructors(IOMobileFramebuffer);
+ };
+diff --git a/iokit/KernelConfigTables.cpp b/iokit/KernelConfigTables.cpp
+index 8862611..510e93a 100644
+--- a/iokit/KernelConfigTables.cpp
++++ b/iokit/KernelConfigTables.cpp
+@@ -68,6 +68,12 @@ const char * gIOKernelConfigTables =
+     "     'IONameMatch'     = 'sweet,display';"
+     "   },"
+     "   {"
++    "     'IOClass'         = SweetAccelerator;"
++    "     'IOProviderClass' = IOPlatformDevice;"
++    "     'IONameMatch'     = 'backlight';"
++    "     'IOMatchCategory' = SweetAccelerator;"
++    "   },"
++    "   {"
+     "     'IOClass'         = SweetBacklight;"
+     "     'IOProviderClass' = IOPlatformDevice;"
+     "     'IONameMatch'     = 'backlight';"
