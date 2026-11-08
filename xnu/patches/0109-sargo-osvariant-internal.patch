@@ -1,0 +1,38 @@
+diff --git a/bsd/kern/kern_sysctl.c b/bsd/kern/kern_sysctl.c
+index 9ba4ffb..b381441 100644
+--- a/bsd/kern/kern_sysctl.c
++++ b/bsd/kern/kern_sysctl.c
+@@ -2058,9 +2058,33 @@ SYSCTL_PROC(_kern, OID_AUTO, iossupportversion,
+ 
+ static uint64_t osvariant_status = 0;
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++/*
++ * Boot-arg sweetinternal=1: pre-set kern.osvariant_status to "internal content / internal release
++ * type / internal diagnostics profile" so libtrace and friends honour OS_ACTIVITY_DT_MODE
++ * (launchd can then only fail to write it, which it tolerates).
++ */
++static void
++sweet_osvariant_lazy_init(void)
++{
++	static int done;
++	if (done) {
++		return;
++	}
++	done = 1;
++	int on = 0;
++	if (PE_parse_boot_argn("sweetinternal", &on, sizeof(on)) && on && osvariant_status == 0) {
++		osvariant_status = 0x70000000F00000F3ULL;
++	}
++}
++#endif
++
+ STATIC int
+ sysctl_osvariant_status(__unused struct sysctl_oid *oidp, void *arg1, int arg2, struct sysctl_req *req)
+ {
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	sweet_osvariant_lazy_init();
++#endif
+ 	if (req->newptr != 0) {
+ 		/*
+ 		 * Can only ever be set by launchd, and only once.
